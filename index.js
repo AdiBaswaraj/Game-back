@@ -371,19 +371,110 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('game_action', (payload = {}) => {
+    const { roomCode, action } = payload;
+    if (!roomCode) {
+      socket.emit('error', { message: 'roomCode is required' });
+      return;
+    }
+    socket.to(roomCode).emit('opponent_action', { action });
+  });
+
+  socket.on('game_state_sync', (payload = {}) => {
+    const { roomCode, state } = payload;
+    if (!roomCode) {
+      socket.emit('error', { message: 'roomCode is required' });
+      return;
+    }
+    io.to(roomCode).emit('state_sync', { state });
+  });
+
+  socket.on('game_over', async (payload = {}) => {
+    const { roomCode, winnerId, loserId, score } = payload;
+    if (
+      !roomCode ||
+      !winnerId ||
+      !loserId ||
+      score === undefined ||
+      score === null
+    ) {
+      socket.emit('error', {
+        message: 'roomCode, winnerId, loserId, and score are required',
+      });
+      return;
+    }
+    const room = rooms.getRoom(roomCode);
+    if (!room) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+
+    rooms.updateStatus(roomCode, 'finished');
+
+    const completed_at = new Date().toISOString();
+    const { error } = await supabase.from('scores').insert([
+      { user_id: winnerId, game_id: room.gameId, score, completed_at },
+      { user_id: loserId, game_id: room.gameId, score: 0, completed_at },
+    ]);
+    if (error) {
+      console.error('[game_over] score insert error:', error);
+    }
+
+    io.to(roomCode).emit('match_result', { winnerId, loserId });
+  });
+
+  socket.on('reconnect_to_room', (payload = {}) => {
+    const { roomCode, username } = payload;
+    if (!roomCode || !username) {
+      socket.emit('error', {
+        message: 'roomCode and username are required',
+      });
+      return;
+    }
+    const room = rooms.getRoom(roomCode);
+    if (!room) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+    const reattached = rooms.reattachPlayer(roomCode, username, socket.id);
+    if (!reattached) {
+      socket.emit('error', { message: 'Player was not in this room' });
+      return;
+    }
+
+    socket.join(roomCode);
+    io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
+
+    const other = room.players.find(
+      (p) => p.username !== username && p.socketId
+    );
+    if (other) {
+      io.to(other.socketId).emit('request_state_sync', { roomCode });
+    }
+  });
+
   socket.on('disconnect', async (reason) => {
     console.log(`[socket.io] client disconnected: ${socket.id} (${reason})`);
 
     const gameRoom = rooms.findRoomBySocketId(socket.id);
     if (gameRoom) {
       const leaver = gameRoom.players.find((p) => p.socketId === socket.id);
-      const updated = rooms.removePlayer(gameRoom.code, socket.id);
-      if (updated) {
+      if (gameRoom.status === 'in-progress') {
+        rooms.markDisconnected(gameRoom.code, socket.id);
         io.to(gameRoom.code).emit('opponent_left', {
           userId: leaver?.id,
           username: leaver?.username,
         });
-        io.to(gameRoom.code).emit('room_update', rooms.toPublicRoom(updated));
+        io.to(gameRoom.code).emit('room_update', rooms.toPublicRoom(gameRoom));
+      } else {
+        const updated = rooms.removePlayer(gameRoom.code, socket.id);
+        if (updated) {
+          io.to(gameRoom.code).emit('opponent_left', {
+            userId: leaver?.id,
+            username: leaver?.username,
+          });
+          io.to(gameRoom.code).emit('room_update', rooms.toPublicRoom(updated));
+        }
       }
     }
 

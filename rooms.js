@@ -54,6 +54,24 @@ function removePlayer(code, socketId) {
   return room;
 }
 
+function markDisconnected(code, socketId) {
+  const room = rooms.get(code);
+  if (!room) return null;
+  const player = room.players.find((p) => p.socketId === socketId);
+  if (!player) return null;
+  player.socketId = null;
+  return room;
+}
+
+function reattachPlayer(code, username, newSocketId) {
+  const room = rooms.get(code);
+  if (!room) return null;
+  const player = room.players.find((p) => p.username === username);
+  if (!player) return null;
+  player.socketId = newSocketId;
+  return room;
+}
+
 function setReady(code, socketId) {
   const room = rooms.get(code);
   if (!room) return null;
@@ -116,6 +134,8 @@ module.exports = {
   getRoom,
   addPlayer,
   removePlayer,
+  markDisconnected,
+  reattachPlayer,
   setReady,
   updateStatus,
   toPublicRoom,
