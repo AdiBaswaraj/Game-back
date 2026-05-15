@@ -90,6 +90,13 @@ function updateStatus(code, status) {
   return room;
 }
 
+function setGameState(code, state) {
+  const room = rooms.get(code);
+  if (!room) return null;
+  room.gameState = state;
+  return room;
+}
+
 function toPublicRoom(room) {
   return {
     code: room.code,
@@ -101,6 +108,7 @@ function toPublicRoom(room) {
       username: p.username,
       ready: p.ready,
     })),
+    gameState: room.gameState ?? null,
   };
 }
 
@@ -138,6 +146,7 @@ module.exports = {
   reattachPlayer,
   setReady,
   updateStatus,
+  setGameState,
   toPublicRoom,
   findRoomBySocketId,
   startCleanup,

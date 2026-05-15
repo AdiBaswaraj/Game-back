@@ -7,6 +7,7 @@ const { Server } = require('socket.io');
 const supabase = require('./supabase');
 const rooms = require('./rooms');
 const presence = require('./presence');
+const games = require('./games');
 
 const app = express();
 app.use(cors());
@@ -361,6 +362,10 @@ io.on('connection', (socket) => {
     const { room, bothReady } = result;
     if (bothReady) {
       rooms.updateStatus(roomCode, 'in-progress');
+      const initialState = games.initGameState(room.gameId, room.players);
+      if (initialState) {
+        rooms.setGameState(roomCode, initialState);
+      }
     }
     io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
     if (bothReady) {
@@ -369,6 +374,70 @@ io.on('connection', (socket) => {
         gameId: room.gameId,
       });
     }
+  });
+
+  socket.on('roll_dice', (payload = {}) => {
+    const { roomCode, playerId } = payload;
+    if (!roomCode || !playerId) {
+      socket.emit('error', {
+        message: 'roomCode and playerId are required',
+      });
+      return;
+    }
+    const room = rooms.getRoom(roomCode);
+    if (!room) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+    if (!room.gameState) {
+      socket.emit('error', { message: 'Game has not started' });
+      return;
+    }
+
+    const playerIds = room.players.map((p) => p.id);
+    const result = games.rollDice(room.gameState, playerIds, playerId);
+    if (result.error) {
+      socket.emit('error', { message: result.error });
+      return;
+    }
+
+    io.to(roomCode).emit('dice_result', {
+      roll: result.roll,
+      newPosition: result.newPosition,
+      nextTurn: result.nextTurn,
+      winner: result.winner,
+    });
+  });
+
+  socket.on('chess_move', (payload = {}) => {
+    const { roomCode, move } = payload;
+    if (!roomCode || !move) {
+      socket.emit('error', { message: 'roomCode and move are required' });
+      return;
+    }
+    const room = rooms.getRoom(roomCode);
+    if (!room) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+    if (!room.gameState) {
+      socket.emit('error', { message: 'Game has not started' });
+      return;
+    }
+
+    const result = games.applyChessMove(room.gameState, move);
+    if (result.error) {
+      socket.emit('error', { message: result.error });
+      return;
+    }
+
+    io.to(roomCode).emit('move_accepted', {
+      move: result.move,
+      fen: result.fen,
+      turn: result.turn,
+      isCheck: result.isCheck,
+      isCheckmate: result.isCheckmate,
+    });
   });
 
   socket.on('game_action', (payload = {}) => {
