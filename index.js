@@ -1,23 +1,78 @@
 require('dotenv').config();
 
+const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'FRONTEND_URL'];
+const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (missingEnv.length > 0) {
+  console.warn(`[startup] missing env vars: ${missingEnv.join(', ')}`);
+}
+
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const { Server } = require('socket.io');
 const supabase = require('./supabase');
 const rooms = require('./rooms');
 const presence = require('./presence');
 const games = require('./games');
 
+const allowedOrigin = process.env.FRONTEND_URL;
+
 const app = express();
-app.use(cors());
+app.set('trust proxy', 1);
+
+app.use(
+  cors({
+    origin: allowedOrigin || true,
+    credentials: true,
+  })
+);
+
+app.use((req, res, next) => {
+  if (req.method === 'POST') {
+    const ct = req.headers['content-type'] || '';
+    if (!ct.includes('application/json')) {
+      return res
+        .status(400)
+        .json({ error: 'Content-Type must be application/json' });
+    }
+  }
+  next();
+});
+
 app.use(express.json());
+
+app.use((err, req, res, next) => {
+  if (err && (err.type === 'entity.parse.failed' || err instanceof SyntaxError)) {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
+  next(err);
+});
+
+const ah = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
+const roomCreateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down' },
+});
+
+const scoresLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down' },
+});
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.post('/api/scores', async (req, res) => {
+app.post('/api/scores', scoresLimiter, ah(async (req, res) => {
   const { user_id, game_id, score, completed_at } = req.body || {};
 
   if (
@@ -44,9 +99,9 @@ app.post('/api/scores', async (req, res) => {
   }
 
   res.json({ success: true, data });
-});
+}));
 
-app.get('/api/scores/leaderboard/:gameId', async (req, res) => {
+app.get('/api/scores/leaderboard/:gameId', ah(async (req, res) => {
   const { gameId } = req.params;
 
   const { data, error } = await supabase
@@ -68,9 +123,9 @@ app.get('/api/scores/leaderboard/:gameId', async (req, res) => {
   }));
 
   res.json(leaderboard);
-});
+}));
 
-app.post('/api/rooms/create', (req, res) => {
+app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
   const { gameId, username } = req.body || {};
   if (!gameId || !username) {
     return res.status(400).json({ error: 'gameId and username are required' });
@@ -100,7 +155,7 @@ async function fetchAcceptedFriendIds(userId) {
   );
 }
 
-app.post('/api/friends/request', async (req, res) => {
+app.post('/api/friends/request', ah(async (req, res) => {
   const { requesterId, addresseeUsername } = req.body || {};
   if (!requesterId || !addresseeUsername) {
     return res
@@ -150,9 +205,9 @@ app.post('/api/friends/request', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
   res.json({ success: true, friendship: data });
-});
+}));
 
-app.post('/api/friends/accept', async (req, res) => {
+app.post('/api/friends/accept', ah(async (req, res) => {
   const { userId, friendshipId } = req.body || {};
   if (!userId || !friendshipId) {
     return res
@@ -178,9 +233,9 @@ app.post('/api/friends/accept', async (req, res) => {
     .eq('id', friendshipId);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
-});
+}));
 
-app.post('/api/friends/remove', async (req, res) => {
+app.post('/api/friends/remove', ah(async (req, res) => {
   const { userId, friendshipId } = req.body || {};
   if (!userId || !friendshipId) {
     return res
@@ -211,9 +266,9 @@ app.post('/api/friends/remove', async (req, res) => {
     .eq('id', friendshipId);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ success: true });
-});
+}));
 
-app.get('/api/friends/:userId/pending', async (req, res) => {
+app.get('/api/friends/:userId/pending', ah(async (req, res) => {
   const { userId } = req.params;
   const { data, error } = await supabase
     .from('friendships')
@@ -231,9 +286,9 @@ app.get('/api/friends/:userId/pending', async (req, res) => {
     created_at: f.created_at,
   }));
   res.json(pending);
-});
+}));
 
-app.get('/api/friends/:userId', async (req, res) => {
+app.get('/api/friends/:userId', ah(async (req, res) => {
   const { userId } = req.params;
   const { data, error } = await supabase
     .from('friendships')
@@ -260,13 +315,18 @@ app.get('/api/friends/:userId', async (req, res) => {
     };
   });
   res.json(friends);
+}));
+
+app.use((err, req, res, next) => {
+  console.error('[error]', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: '*',
+    origin: allowedOrigin || '*',
     methods: ['GET', 'POST'],
   },
 });
@@ -564,5 +624,5 @@ rooms.startCleanup();
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Arcadia backend listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
