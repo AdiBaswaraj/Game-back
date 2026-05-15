@@ -29,9 +29,14 @@ function getSocketId(userId) {
   return onlineUsers.get(userId)?.socketId ?? null;
 }
 
+function getUserId(socketId) {
+  return socketToUser.get(socketId) ?? null;
+}
+
 module.exports = {
   setOnline,
   setOffline,
   isOnline,
   getSocketId,
+  getUserId,
 };

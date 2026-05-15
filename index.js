@@ -309,8 +309,84 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('join_room', (payload = {}) => {
+    const { roomCode, username } = payload;
+    if (!roomCode || !username) {
+      socket.emit('error', {
+        message: 'roomCode and username are required',
+      });
+      return;
+    }
+
+    const existing = rooms.getRoom(roomCode);
+    if (!existing) {
+      socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+    if (existing.players.length >= 2) {
+      socket.emit('error', { message: 'Room is full' });
+      return;
+    }
+
+    const id = presence.getUserId(socket.id) || socket.id;
+    const updated = rooms.addPlayer(roomCode, {
+      id,
+      username,
+      socketId: socket.id,
+    });
+    if (!updated) {
+      socket.emit('error', { message: 'Failed to join room' });
+      return;
+    }
+
+    socket.join(roomCode);
+    io.to(roomCode).emit('room_update', rooms.toPublicRoom(updated));
+  });
+
+  socket.on('player_ready', (payload = {}) => {
+    const { roomCode } = payload;
+    if (!roomCode) {
+      socket.emit('error', { message: 'roomCode is required' });
+      return;
+    }
+
+    const result = rooms.setReady(roomCode, socket.id);
+    if (!result) {
+      socket.emit('error', {
+        message: 'Room not found or you are not in it',
+      });
+      return;
+    }
+
+    const { room, bothReady } = result;
+    if (bothReady) {
+      rooms.updateStatus(roomCode, 'in-progress');
+    }
+    io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
+    if (bothReady) {
+      io.to(roomCode).emit('game_start', {
+        roomCode,
+        gameId: room.gameId,
+      });
+    }
+  });
+
   socket.on('disconnect', async (reason) => {
     console.log(`[socket.io] client disconnected: ${socket.id} (${reason})`);
+
+    const gameRoom = rooms.findRoomBySocketId(socket.id);
+    if (gameRoom) {
+      const leaver = gameRoom.players.find((p) => p.socketId === socket.id);
+      const updated = rooms.removePlayer(gameRoom.code, socket.id);
+      if (updated) {
+        io.to(gameRoom.code).emit('opponent_left', {
+          userId: leaver?.id,
+          username: leaver?.username,
+        });
+        io.to(gameRoom.code).emit('room_update', rooms.toPublicRoom(updated));
+      }
+    }
+
     const userId = presence.setOffline(socket.id);
     if (!userId) return;
 

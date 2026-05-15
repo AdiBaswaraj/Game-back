@@ -86,6 +86,13 @@ function toPublicRoom(room) {
   };
 }
 
+function findRoomBySocketId(socketId) {
+  for (const room of rooms.values()) {
+    if (room.players.some((p) => p.socketId === socketId)) return room;
+  }
+  return null;
+}
+
 function cleanupExpiredRooms() {
   const now = Date.now();
   let removed = 0;
@@ -112,5 +119,6 @@ module.exports = {
   setReady,
   updateStatus,
   toPublicRoom,
+  findRoomBySocketId,
   startCleanup,
 };
