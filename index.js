@@ -268,6 +268,26 @@ app.post('/api/friends/remove', ah(async (req, res) => {
   res.json({ success: true });
 }));
 
+app.get('/api/friends/search', ah(async (req, res) => {
+  const username = (req.query.username || '').toString().trim();
+  if (!username) {
+    return res.status(400).json({ error: 'username query param is required' });
+  }
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .ilike('username', `%${username}%`)
+    .limit(10);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(
+    (data || []).map((p) => ({
+      userId: p.id,
+      username: p.username,
+      avatar_url: p.avatar_url,
+    }))
+  );
+}));
+
 app.get('/api/friends/:userId/pending', ah(async (req, res) => {
   const { userId } = req.params;
   const { data, error } = await supabase
@@ -286,6 +306,23 @@ app.get('/api/friends/:userId/pending', ah(async (req, res) => {
     created_at: f.created_at,
   }));
   res.json(pending);
+}));
+
+app.get('/api/friends/:userId/outgoing', ah(async (req, res) => {
+  const { userId } = req.params;
+  const { data, error } = await supabase
+    .from('friendships')
+    .select('id, addressee:profiles!addressee_id ( id, username )')
+    .eq('requester_id', userId)
+    .eq('status', 'pending');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(
+    (data || []).map((f) => ({
+      friendshipId: f.id,
+      userId: f.addressee?.id,
+      username: f.addressee?.username,
+    }))
+  );
 }));
 
 app.get('/api/friends/:userId', ah(async (req, res) => {
@@ -315,6 +352,38 @@ app.get('/api/friends/:userId', ah(async (req, res) => {
     };
   });
   res.json(friends);
+}));
+
+app.get('/api/users/:userId/stats', ah(async (req, res) => {
+  const { userId } = req.params;
+  const { data, error } = await supabase
+    .from('scores')
+    .select('game_id, score, completed_at')
+    .eq('user_id', userId);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const byGame = new Map();
+  for (const row of data || []) {
+    let stat = byGame.get(row.game_id);
+    if (!stat) {
+      stat = {
+        gameId: row.game_id,
+        bestScore: row.score,
+        totalPlays: 0,
+        lastPlayed: row.completed_at,
+        wins: 0,
+        losses: 0,
+      };
+      byGame.set(row.game_id, stat);
+    }
+    if (row.score > stat.bestScore) stat.bestScore = row.score;
+    if (row.completed_at > stat.lastPlayed) stat.lastPlayed = row.completed_at;
+    stat.totalPlays++;
+    if (row.score > 0) stat.wins++;
+    else stat.losses++;
+  }
+
+  res.json(Array.from(byGame.values()));
 }));
 
 app.use((err, req, res, next) => {
