@@ -15,6 +15,7 @@ const supabase = require('./supabase');
 const rooms = require('./rooms');
 const presence = require('./presence');
 const games = require('./games');
+const queues = require('./queues');
 
 const allowedOrigin = process.env.FRONTEND_URL;
 
@@ -138,6 +139,11 @@ app.get('/api/rooms/:code', (req, res) => {
   const room = rooms.getRoom(req.params.code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
   res.json(rooms.toPublicRoom(room));
+});
+
+app.get('/api/queue/:gameId', (req, res) => {
+  const { gameId } = req.params;
+  res.json({ gameId, waiting: queues.getQueueLength(gameId) });
 });
 
 async function fetchAcceptedFriendIds(userId) {
@@ -651,8 +657,91 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('join_queue', (payload = {}) => {
+    const { gameId, userId, username } = payload;
+    if (!gameId || !userId || !username) {
+      socket.emit('error', {
+        message: 'gameId, userId, and username are required',
+      });
+      return;
+    }
+    if (!queues.isSupported(gameId)) {
+      socket.emit('error', { message: 'Unsupported gameId' });
+      return;
+    }
+
+    queues.leaveAllQueues(socket.id);
+    queues.joinQueue(gameId, { userId, username, socketId: socket.id });
+
+    const match = queues.findMatch(gameId);
+    if (!match) {
+      socket.emit('queue_waiting', {
+        gameId,
+        position: queues.getQueueLength(gameId),
+      });
+      return;
+    }
+
+    const [p1, p2] = match;
+    const room = rooms.createRoom(gameId);
+    rooms.addPlayer(room.code, {
+      id: p1.userId,
+      username: p1.username,
+      socketId: p1.socketId,
+    });
+    rooms.addPlayer(room.code, {
+      id: p2.userId,
+      username: p2.username,
+      socketId: p2.socketId,
+    });
+    rooms.updateStatus(room.code, 'in-progress');
+
+    const initialState = games.initGameState(gameId, room.players);
+    if (initialState) {
+      rooms.setGameState(room.code, initialState);
+    }
+
+    io.sockets.sockets.get(p1.socketId)?.join(room.code);
+    io.sockets.sockets.get(p2.socketId)?.join(room.code);
+
+    io.to(p1.socketId).emit('queue_matched', {
+      roomCode: room.code,
+      gameId,
+      opponentUsername: p2.username,
+    });
+    io.to(p2.socketId).emit('queue_matched', {
+      roomCode: room.code,
+      gameId,
+      opponentUsername: p1.username,
+    });
+
+    io.to(room.code).emit('room_update', rooms.toPublicRoom(room));
+  });
+
+  socket.on('leave_queue', (payload = {}) => {
+    const { gameId, userId } = payload;
+    if (!gameId || !userId) {
+      socket.emit('error', { message: 'gameId and userId are required' });
+      return;
+    }
+    queues.leaveQueue(gameId, userId);
+    socket.emit('queue_left', { gameId });
+  });
+
+  socket.on('queue_timeout', (payload = {}) => {
+    const { gameId, userId } = payload;
+    if (!gameId || !userId) {
+      socket.emit('error', { message: 'gameId and userId are required' });
+      return;
+    }
+    queues.leaveQueue(gameId, userId);
+    socket.emit('queue_left', { gameId });
+  });
+
   socket.on('disconnect', async (reason) => {
     console.log(`[socket.io] client disconnected: ${socket.id} (${reason})`);
+
+    queues.leaveAllQueues(socket.id);
 
     const gameRoom = rooms.findRoomBySocketId(socket.id);
     if (gameRoom) {
