@@ -397,6 +397,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+const DISCONNECT_TIMEOUT_MS =
+  parseInt(process.env.DISCONNECT_TIMEOUT_MS, 10) || 60 * 1000;
+const disconnectTimers = new Map();
+
 const server = http.createServer(app);
 
 const io = new Server(server, {
@@ -405,6 +409,35 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
   },
 });
+
+async function finishGame(roomCode, winnerId, loserId, options = {}) {
+  const { winnerScore = 1, reason = null } = options;
+  const room = rooms.getRoom(roomCode);
+  if (!room) return;
+
+  const pending = disconnectTimers.get(roomCode);
+  if (pending) {
+    clearTimeout(pending);
+    disconnectTimers.delete(roomCode);
+  }
+
+  rooms.updateStatus(roomCode, 'finished');
+
+  const completed_at = new Date().toISOString();
+  try {
+    const { error } = await supabase.from('scores').insert([
+      { user_id: winnerId, game_id: room.gameId, score: winnerScore, completed_at },
+      { user_id: loserId, game_id: room.gameId, score: 0, completed_at },
+    ]);
+    if (error) console.error('[finishGame] score insert error:', error);
+  } catch (e) {
+    console.error('[finishGame] score insert threw:', e.message);
+  }
+
+  const payload = { winnerId, loserId };
+  if (reason) payload.reason = reason;
+  io.to(roomCode).emit('match_result', payload);
+}
 
 io.on('connection', (socket) => {
   console.log(`[socket.io] client connected: ${socket.id}`);
@@ -504,10 +537,9 @@ io.on('connection', (socket) => {
     }
     io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
     if (bothReady) {
-      io.to(roomCode).emit('game_start', {
-        roomCode,
-        gameId: room.gameId,
-      });
+      const startPayload = { roomCode, gameId: room.gameId };
+      if (room.gameState?.clock) startPayload.clock = room.gameState.clock;
+      io.to(roomCode).emit('game_start', startPayload);
     }
   });
 
@@ -544,7 +576,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('chess_move', (payload = {}) => {
+  socket.on('chess_move', async (payload = {}) => {
     const { roomCode, move } = payload;
     if (!roomCode || !move) {
       socket.emit('error', { message: 'roomCode and move are required' });
@@ -572,7 +604,17 @@ io.on('connection', (socket) => {
       turn: result.turn,
       isCheck: result.isCheck,
       isCheckmate: result.isCheckmate,
+      clock: result.clock,
     });
+
+    if (result.timedOut) {
+      const flagged = result.timedOut;
+      const loserPlayer = flagged === 'w' ? room.players[0] : room.players[1];
+      const winnerPlayer = flagged === 'w' ? room.players[1] : room.players[0];
+      await finishGame(room.code, winnerPlayer.id, loserPlayer.id, {
+        reason: 'timeout',
+      });
+    }
   });
 
   socket.on('game_action', (payload = {}) => {
@@ -594,16 +636,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('game_over', async (payload = {}) => {
-    const { roomCode, winnerId, loserId, score } = payload;
-    if (
-      !roomCode ||
-      !winnerId ||
-      !loserId ||
-      score === undefined ||
-      score === null
-    ) {
+    console.log('[game_over] received:', payload);
+    const { roomCode, winnerId, loserId, score, reason } = payload;
+    if (!roomCode || !winnerId || !loserId) {
       socket.emit('error', {
-        message: 'roomCode, winnerId, loserId, and score are required',
+        message: 'roomCode, winnerId, and loserId are required',
       });
       return;
     }
@@ -613,18 +650,10 @@ io.on('connection', (socket) => {
       return;
     }
 
-    rooms.updateStatus(roomCode, 'finished');
-
-    const completed_at = new Date().toISOString();
-    const { error } = await supabase.from('scores').insert([
-      { user_id: winnerId, game_id: room.gameId, score, completed_at },
-      { user_id: loserId, game_id: room.gameId, score: 0, completed_at },
-    ]);
-    if (error) {
-      console.error('[game_over] score insert error:', error);
-    }
-
-    io.to(roomCode).emit('match_result', { winnerId, loserId });
+    await finishGame(roomCode, winnerId, loserId, {
+      winnerScore: score ?? 1,
+      reason: reason || null,
+    });
   });
 
   socket.on('reconnect_to_room', (payload = {}) => {
@@ -647,6 +676,14 @@ io.on('connection', (socket) => {
     }
 
     socket.join(roomCode);
+
+    const pendingTimer = disconnectTimers.get(roomCode);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      disconnectTimers.delete(roomCode);
+      io.to(roomCode).emit('opponent_reconnected', { username });
+    }
+
     io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
 
     const other = room.players.find(
@@ -704,15 +741,20 @@ io.on('connection', (socket) => {
     io.sockets.sockets.get(p1.socketId)?.join(room.code);
     io.sockets.sockets.get(p2.socketId)?.join(room.code);
 
+    const clockPayload = room.gameState?.clock
+      ? { clock: room.gameState.clock }
+      : {};
     io.to(p1.socketId).emit('queue_matched', {
       roomCode: room.code,
       gameId,
       opponentUsername: p2.username,
+      ...clockPayload,
     });
     io.to(p2.socketId).emit('queue_matched', {
       roomCode: room.code,
       gameId,
       opponentUsername: p1.username,
+      ...clockPayload,
     });
 
     io.to(room.code).emit('room_update', rooms.toPublicRoom(room));
@@ -748,11 +790,22 @@ io.on('connection', (socket) => {
       const leaver = gameRoom.players.find((p) => p.socketId === socket.id);
       if (gameRoom.status === 'in-progress') {
         rooms.markDisconnected(gameRoom.code, socket.id);
-        io.to(gameRoom.code).emit('opponent_left', {
-          userId: leaver?.id,
-          username: leaver?.username,
-        });
-        io.to(gameRoom.code).emit('room_update', rooms.toPublicRoom(gameRoom));
+        const remaining = gameRoom.players.find((p) => p.id !== leaver.id);
+        if (remaining?.socketId) {
+          io.to(remaining.socketId).emit('opponent_disconnected', {
+            username: leaver?.username,
+            reconnectDeadline: Date.now() + DISCONNECT_TIMEOUT_MS,
+          });
+          const existingTimer = disconnectTimers.get(gameRoom.code);
+          if (existingTimer) clearTimeout(existingTimer);
+          const timerId = setTimeout(async () => {
+            disconnectTimers.delete(gameRoom.code);
+            await finishGame(gameRoom.code, remaining.id, leaver.id, {
+              reason: 'disconnect_timeout',
+            });
+          }, DISCONNECT_TIMEOUT_MS);
+          disconnectTimers.set(gameRoom.code, timerId);
+        }
       } else {
         const updated = rooms.removePlayer(gameRoom.code, socket.id);
         if (updated) {

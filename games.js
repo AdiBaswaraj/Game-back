@@ -7,6 +7,7 @@ const SNAKE_LADDER_SNAKES = {
   16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78,
 };
 const FINAL_SQUARE = 100;
+const CHESS_CLOCK_SECONDS = 600;
 
 function initGameState(gameId, players) {
   if (gameId === 'snake-and-ladder') {
@@ -17,7 +18,15 @@ function initGameState(gameId, players) {
     };
   }
   if (gameId === 'chess') {
-    return { fen: new Chess().fen() };
+    return {
+      fen: new Chess().fen(),
+      clock: {
+        white: CHESS_CLOCK_SECONDS,
+        black: CHESS_CLOCK_SECONDS,
+        activeColor: 'w',
+        lastTickAt: Date.now(),
+      },
+    };
   }
   return null;
 }
@@ -58,12 +67,30 @@ function applyChessMove(state, move) {
   if (!result) return { error: 'Invalid move' };
 
   state.fen = chess.fen();
+
+  let clock = null;
+  let timedOut = null;
+  if (state.clock) {
+    const moverColor = state.clock.activeColor;
+    const moverKey = moverColor === 'w' ? 'white' : 'black';
+    const elapsed = (Date.now() - state.clock.lastTickAt) / 1000;
+    state.clock[moverKey] = Math.max(0, state.clock[moverKey] - elapsed);
+    state.clock.activeColor = moverColor === 'w' ? 'b' : 'w';
+    state.clock.lastTickAt = Date.now();
+    clock = { ...state.clock };
+    if (state.clock[moverKey] <= 0) {
+      timedOut = moverColor;
+    }
+  }
+
   return {
     move: result,
     fen: chess.fen(),
     turn: chess.turn(),
     isCheck: chess.inCheck(),
     isCheckmate: chess.isCheckmate(),
+    clock,
+    timedOut,
   };
 }
 
