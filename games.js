@@ -9,17 +9,24 @@ const SNAKE_LADDER_SNAKES = {
 const FINAL_SQUARE = 100;
 const CHESS_CLOCK_SECONDS = 600;
 
+function logBoardMap() {
+  console.log('[s&l] ladders (start -> end):', SNAKE_LADDER_LADDERS);
+  console.log('[s&l] snakes  (start -> end):', SNAKE_LADDER_SNAKES);
+}
+
 function initGameState(gameId, players) {
   if (gameId === 'snake-and-ladder') {
     const [p1, p2] = players;
     return {
       positions: { [p1.id]: 1, [p2.id]: 1 },
       turn: p1.id,
+      lastDice: null,
     };
   }
   if (gameId === 'chess') {
     return {
       fen: new Chess().fen(),
+      moves: [],
       clock: {
         white: CHESS_CLOCK_SECONDS,
         black: CHESS_CLOCK_SECONDS,
@@ -36,15 +43,25 @@ function rollDice(state, playerIds, playerId) {
     return { error: 'Not your turn' };
   }
   const roll = Math.floor(Math.random() * 6) + 1;
-  let newPosition = state.positions[playerId] + roll;
+  const oldPosition = state.positions[playerId];
+  let landedOn = oldPosition + roll;
+  let newPosition = landedOn;
 
-  // Overshooting 100 means you don't move this turn.
-  if (newPosition > FINAL_SQUARE) {
-    newPosition = state.positions[playerId];
-  } else if (SNAKE_LADDER_LADDERS[newPosition]) {
-    newPosition = SNAKE_LADDER_LADDERS[newPosition];
-  } else if (SNAKE_LADDER_SNAKES[newPosition]) {
-    newPosition = SNAKE_LADDER_SNAKES[newPosition];
+  console.log(
+    `[s&l] roll: player=${playerId} oldPos=${oldPosition} dice=${roll} landedOn=${landedOn}`
+  );
+
+  if (landedOn > FINAL_SQUARE) {
+    console.log(`[s&l] overshoot ${FINAL_SQUARE}, staying at ${oldPosition}`);
+    newPosition = oldPosition;
+  } else if (SNAKE_LADDER_LADDERS[landedOn]) {
+    const dest = SNAKE_LADDER_LADDERS[landedOn];
+    console.log(`[s&l] ladder triggered: from ${landedOn} to ${dest}`);
+    newPosition = dest;
+  } else if (SNAKE_LADDER_SNAKES[landedOn]) {
+    const dest = SNAKE_LADDER_SNAKES[landedOn];
+    console.log(`[s&l] snake triggered: from ${landedOn} to ${dest}`);
+    newPosition = dest;
   }
 
   state.positions[playerId] = newPosition;
@@ -52,6 +69,7 @@ function rollDice(state, playerIds, playerId) {
   const otherId = playerIds.find((id) => id !== playerId);
   const nextTurn = winner ? null : otherId;
   state.turn = nextTurn;
+  state.lastDice = { roll, by: playerId, newPosition, winner };
 
   return { roll, newPosition, nextTurn, winner };
 }
@@ -67,6 +85,8 @@ function applyChessMove(state, move) {
   if (!result) return { error: 'Invalid move' };
 
   state.fen = chess.fen();
+  state.moves = state.moves || [];
+  state.moves.push(result.san);
 
   let clock = null;
   let timedOut = null;
@@ -94,4 +114,17 @@ function applyChessMove(state, move) {
   };
 }
 
-module.exports = { initGameState, rollDice, applyChessMove };
+function buildPgn(moves) {
+  if (!moves || moves.length === 0) return '';
+  const c = new Chess();
+  for (const san of moves) {
+    try {
+      c.move(san);
+    } catch {
+      break;
+    }
+  }
+  return c.pgn();
+}
+
+module.exports = { initGameState, rollDice, applyChessMove, buildPgn, logBoardMap };

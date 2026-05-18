@@ -11,6 +11,7 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const { Server } = require('socket.io');
+const { Chess } = require('chess.js');
 const supabase = require('./supabase');
 const rooms = require('./rooms');
 const presence = require('./presence');
@@ -439,6 +440,31 @@ async function finishGame(roomCode, winnerId, loserId, options = {}) {
   io.to(roomCode).emit('match_result', payload);
 }
 
+function buildStateSync(room) {
+  if (!room?.gameState) return null;
+  if (room.gameId === 'chess') {
+    const chess = new Chess(room.gameState.fen);
+    const turnColor = chess.turn();
+    const currentTurn =
+      turnColor === 'w' ? room.players[0]?.id : room.players[1]?.id;
+    return {
+      fen: room.gameState.fen,
+      turn: turnColor,
+      currentTurn,
+      clock: room.gameState.clock,
+      pgn: games.buildPgn(room.gameState.moves || []),
+    };
+  }
+  if (room.gameId === 'snake-and-ladder') {
+    return {
+      positions: room.gameState.positions,
+      currentTurn: room.gameState.turn,
+      diceResult: room.gameState.lastDice || null,
+    };
+  }
+  return room.gameState;
+}
+
 io.on('connection', (socket) => {
   console.log(`[socket.io] client connected: ${socket.id}`);
 
@@ -592,11 +618,25 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const beforeFen = room.gameState.fen;
+    console.log(
+      `[chess_move] room=${roomCode} socket=${socket.id} move=${JSON.stringify(move)} before-fen=${beforeFen}`
+    );
+
     const result = games.applyChessMove(room.gameState, move);
     if (result.error) {
-      socket.emit('error', { message: result.error });
+      console.log(
+        `[chess_move] rejected room=${roomCode} move=${JSON.stringify(move)} fen=${beforeFen}`
+      );
+      socket.emit('chess_move_error', {
+        move,
+        fen: beforeFen,
+        error: result.error,
+      });
       return;
     }
+
+    console.log(`[chess_move] accepted room=${roomCode} after-fen=${result.fen}`);
 
     io.to(roomCode).emit('move_accepted', {
       move: result.move,
@@ -685,6 +725,12 @@ io.on('connection', (socket) => {
     }
 
     io.to(roomCode).emit('room_update', rooms.toPublicRoom(room));
+
+    const syncState = buildStateSync(room);
+    if (syncState) {
+      console.log('[turn] currentTurn userId:', syncState.currentTurn);
+      io.to(roomCode).emit('state_sync', { state: syncState });
+    }
 
     const other = room.players.find(
       (p) => p.username !== username && p.socketId
@@ -836,4 +882,5 @@ rooms.startCleanup();
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  games.logBoardMap();
 });
