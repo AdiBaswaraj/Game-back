@@ -1,17 +1,32 @@
 const { Chess } = require('chess.js');
 
-const SNAKE_LADDER_LADDERS = {
-  1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100,
+const LADDERS = {
+  4: 25,
+  13: 46,
+  33: 52,
+  42: 63,
+  50: 69,
+  57: 76,
+  62: 81,
+  71: 92,
 };
-const SNAKE_LADDER_SNAKES = {
-  16: 6, 47: 26, 49: 11, 56: 53, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 78,
+const SNAKES = {
+  17: 3,
+  35: 14,
+  54: 28,
+  63: 37,
+  72: 51,
+  88: 24,
+  93: 45,
+  97: 61,
+  98: 6,
 };
 const FINAL_SQUARE = 100;
 const CHESS_CLOCK_SECONDS = 600;
 
 function logBoardMap() {
-  console.log('[s&l] ladders (start -> end):', SNAKE_LADDER_LADDERS);
-  console.log('[s&l] snakes  (start -> end):', SNAKE_LADDER_SNAKES);
+  console.log('[s&l] ladders:', LADDERS);
+  console.log('[s&l] snakes:', SNAKES);
 }
 
 function initGameState(gameId, players) {
@@ -44,25 +59,31 @@ function rollDice(state, playerIds, playerId) {
   }
   const roll = Math.floor(Math.random() * 6) + 1;
   const oldPosition = state.positions[playerId];
-  let landedOn = oldPosition + roll;
+  const landedOn = oldPosition + roll;
   let newPosition = landedOn;
-
-  console.log(
-    `[s&l] roll: player=${playerId} oldPos=${oldPosition} dice=${roll} landedOn=${landedOn}`
-  );
 
   if (landedOn > FINAL_SQUARE) {
     console.log(`[s&l] overshoot ${FINAL_SQUARE}, staying at ${oldPosition}`);
     newPosition = oldPosition;
-  } else if (SNAKE_LADDER_LADDERS[landedOn]) {
-    const dest = SNAKE_LADDER_LADDERS[landedOn];
-    console.log(`[s&l] ladder triggered: from ${landedOn} to ${dest}`);
-    newPosition = dest;
-  } else if (SNAKE_LADDER_SNAKES[landedOn]) {
-    const dest = SNAKE_LADDER_SNAKES[landedOn];
-    console.log(`[s&l] snake triggered: from ${landedOn} to ${dest}`);
-    newPosition = dest;
+  } else {
+    if (LADDERS[newPosition]) {
+      const dest = LADDERS[newPosition];
+      console.log(`[s&l] ladder triggered: from ${newPosition} to ${dest}`);
+      newPosition = dest;
+    }
+    if (SNAKES[newPosition]) {
+      const dest = SNAKES[newPosition];
+      console.log(`[s&l] snake triggered: from ${newPosition} to ${dest}`);
+      newPosition = dest;
+    }
   }
+
+  console.log('[s&l] move resolved:', {
+    from: oldPosition,
+    roll,
+    landedOn,
+    final: newPosition,
+  });
 
   state.positions[playerId] = newPosition;
   const winner = newPosition === FINAL_SQUARE ? playerId : null;
