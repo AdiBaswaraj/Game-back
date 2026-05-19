@@ -460,6 +460,7 @@ function buildStateSync(room) {
       positions: room.gameState.positions,
       currentTurn: room.gameState.turn,
       diceResult: room.gameState.lastDice || null,
+      rollHistory: room.gameState.rollHistory || [],
     };
   }
   return room.gameState;
@@ -588,7 +589,8 @@ io.on('connection', (socket) => {
     }
 
     const playerIds = room.players.map((p) => p.id);
-    const result = games.rollDice(room.gameState, playerIds, playerId);
+    const username = room.players.find((p) => p.id === playerId)?.username;
+    const result = games.rollDice(room.gameState, playerIds, playerId, username);
     if (result.error) {
       socket.emit('error', { message: result.error });
       return;

@@ -17,7 +17,6 @@ const SNAKES = {
   63: 37,
   72: 51,
   88: 24,
-  93: 45,
   97: 61,
   98: 6,
 };
@@ -36,6 +35,7 @@ function initGameState(gameId, players) {
       positions: { [p1.id]: 1, [p2.id]: 1 },
       turn: p1.id,
       lastDice: null,
+      rollHistory: [],
     };
   }
   if (gameId === 'chess') {
@@ -53,7 +53,7 @@ function initGameState(gameId, players) {
   return null;
 }
 
-function rollDice(state, playerIds, playerId) {
+function rollDice(state, playerIds, playerId, username) {
   if (state.turn !== playerId) {
     return { error: 'Not your turn' };
   }
@@ -78,11 +78,18 @@ function rollDice(state, playerIds, playerId) {
     }
   }
 
-  console.log('[s&l] move resolved:', {
+  console.log('[s&l] dice:', {
+    player: username,
     from: oldPosition,
     roll,
     landedOn,
     final: newPosition,
+    trigger:
+      landedOn !== newPosition
+        ? LADDERS[landedOn]
+          ? 'ladder'
+          : 'snake'
+        : 'none',
   });
 
   state.positions[playerId] = newPosition;
@@ -91,6 +98,22 @@ function rollDice(state, playerIds, playerId) {
   const nextTurn = winner ? null : otherId;
   state.turn = nextTurn;
   state.lastDice = { roll, by: playerId, newPosition, winner };
+
+  state.rollHistory = state.rollHistory || [];
+  state.rollHistory.push({
+    player: username,
+    roll,
+    from: oldPosition,
+    final: newPosition,
+  });
+  while (state.rollHistory.length > 30) state.rollHistory.shift();
+
+  if (winner) {
+    console.log(
+      '[s&l] game ended, roll history:',
+      JSON.stringify(state.rollHistory)
+    );
+  }
 
   return { roll, newPosition, nextTurn, winner };
 }
