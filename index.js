@@ -23,6 +23,16 @@ const allowedOrigin = process.env.FRONTEND_URL;
 const app = express();
 app.set('trust proxy', 1);
 
+app.use((req, res, next) => {
+  res.setTimeout(10000, () => {
+    console.error('[timeout] route timed out:', req.method, req.path);
+    if (!res.headersSent) {
+      res.status(503).json({ error: 'Request timed out' });
+    }
+  });
+  next();
+});
+
 app.use(
   cors({
     origin: allowedOrigin || true,
@@ -128,12 +138,26 @@ app.get('/api/scores/leaderboard/:gameId', ah(async (req, res) => {
 }));
 
 app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
-  const { gameId, username } = req.body || {};
-  if (!gameId || !username) {
-    return res.status(400).json({ error: 'gameId and username are required' });
+  console.log('[room/create] received request:', req.body);
+
+  try {
+    console.log('[room/create] validating body...');
+    const { gameId, username } = req.body || {};
+    if (!gameId || !username) {
+      console.log('[room/create] missing fields');
+      return res.status(400).json({ error: 'gameId and username are required' });
+    }
+
+    console.log('[room/create] creating room...');
+    const room = rooms.createRoom(gameId);
+    console.log('[room/create] room created:', room.code);
+
+    console.log('[room/create] sending response...');
+    return res.json({ code: room.code, room: rooms.toPublicRoom(room) });
+  } catch (err) {
+    console.error('[room/create] error:', err);
+    return res.status(500).json({ error: err.message });
   }
-  const room = rooms.createRoom(gameId);
-  res.json({ code: room.code, room: rooms.toPublicRoom(room) });
 });
 
 app.get('/api/rooms/:code', (req, res) => {
