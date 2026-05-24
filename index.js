@@ -468,6 +468,7 @@ function buildStateSync(room) {
 
 io.on('connection', (socket) => {
   console.log(`[socket.io] client connected: ${socket.id}`);
+  io.emit('online_count', { count: io.sockets.sockets.size });
 
   socket.on('user_connected', async (payload = {}) => {
     const { userId, username } = payload;
@@ -867,15 +868,17 @@ io.on('connection', (socket) => {
     }
 
     const userId = presence.setOffline(socket.id);
-    if (!userId) return;
-
-    const friendIds = await fetchAcceptedFriendIds(userId);
-    for (const friendId of friendIds) {
-      const friendSocketId = presence.getSocketId(friendId);
-      if (friendSocketId) {
-        io.to(friendSocketId).emit('friend_offline', { userId });
+    if (userId) {
+      const friendIds = await fetchAcceptedFriendIds(userId);
+      for (const friendId of friendIds) {
+        const friendSocketId = presence.getSocketId(friendId);
+        if (friendSocketId) {
+          io.to(friendSocketId).emit('friend_offline', { userId });
+        }
       }
     }
+
+    io.emit('online_count', { count: io.sockets.sockets.size });
   });
 });
 
