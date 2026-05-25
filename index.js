@@ -462,7 +462,10 @@ const io = new Server(server, {
 async function finishGame(roomCode, winnerId, loserId, options = {}) {
   const { winnerScore = 1, reason = null } = options;
   const room = rooms.getRoom(roomCode);
-  if (!room) return;
+  if (!room) {
+    console.log('[finishGame] room not found:', roomCode);
+    return;
+  }
 
   const pending = disconnectTimers.get(roomCode);
   if (pending) {
@@ -485,6 +488,7 @@ async function finishGame(roomCode, winnerId, loserId, options = {}) {
 
   const payload = { winnerId, loserId };
   if (reason) payload.reason = reason;
+  console.log('[game_over] emitting match_result to room:', roomCode);
   io.to(roomCode).emit('match_result', payload);
 }
 
@@ -737,6 +741,7 @@ io.on('connection', (socket) => {
     }
     const room = rooms.getRoom(roomCode);
     if (!room) {
+      console.log('[game_over] room not found:', roomCode);
       socket.emit('error', { message: 'Room not found' });
       return;
     }

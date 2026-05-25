@@ -39,7 +39,7 @@ function initGameState(gameId, players) {
     };
   }
   if (gameId === 'chess') {
-    return {
+    const state = {
       fen: new Chess().fen(),
       moves: [],
       clock: {
@@ -49,6 +49,8 @@ function initGameState(gameId, players) {
         lastTickAt: Date.now(),
       },
     };
+    console.log('[clock] initialized:', state.clock);
+    return state;
   }
   return null;
 }
@@ -142,6 +144,7 @@ function applyChessMove(state, move) {
     state.clock.activeColor = moverColor === 'w' ? 'b' : 'w';
     state.clock.lastTickAt = Date.now();
     clock = { ...state.clock };
+    console.log('[clock] after move:', state.clock);
     if (state.clock[moverKey] <= 0) {
       timedOut = moverColor;
     }
