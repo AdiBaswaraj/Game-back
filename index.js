@@ -20,6 +20,18 @@ const queues = require('./queues');
 
 const allowedOrigin = process.env.FRONTEND_URL;
 
+const corsOptions = {
+  origin: [
+    'https://game-front-peach.vercel.app',
+    'http://localhost:5173',
+    'http://localhost:3000',
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with'],
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
+
 const app = express();
 app.set('trust proxy', 1);
 
@@ -33,12 +45,15 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(
-  cors({
-    origin: allowedOrigin || true,
-    credentials: true,
-  })
-);
+app.use((req, res, next) => {
+  console.log(
+    `[http] ${req.method} ${req.path} origin:${req.headers.origin}`
+  );
+  next();
+});
+
+app.options('*', cors(corsOptions));
+app.use(cors(corsOptions));
 
 app.use((req, res, next) => {
   if (req.method === 'POST') {
@@ -82,6 +97,15 @@ const scoresLimiter = rateLimit({
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/cors-test', (req, res) => {
+  const origin = req.headers.origin;
+  res.json({
+    ok: true,
+    origin,
+    corsAllowed: corsOptions.origin.includes(origin),
+  });
 });
 
 app.post('/api/scores', scoresLimiter, ah(async (req, res) => {
@@ -911,5 +935,6 @@ rooms.startCleanup();
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log('[cors] allowed origins:', corsOptions.origin);
   games.logBoardMap();
 });
