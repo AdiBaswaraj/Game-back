@@ -42,11 +42,13 @@ function initGameState(gameId, players) {
     const state = {
       fen: new Chess().fen(),
       moves: [],
+      moveCount: 0,
       clock: {
         white: CHESS_CLOCK_SECONDS,
         black: CHESS_CLOCK_SECONDS,
         activeColor: 'w',
-        lastTickAt: Date.now(),
+        lastTickAt: null,
+        running: false,
       },
     };
     console.log('[clock] initialized:', state.clock);
@@ -133,21 +135,36 @@ function applyChessMove(state, move) {
   state.fen = chess.fen();
   state.moves = state.moves || [];
   state.moves.push(result.san);
+  state.moveCount = (state.moveCount || 0) + 1;
 
   let clock = null;
   let timedOut = null;
   if (state.clock) {
     const moverColor = state.clock.activeColor;
-    const moverKey = moverColor === 'w' ? 'white' : 'black';
-    const elapsed = (Date.now() - state.clock.lastTickAt) / 1000;
-    state.clock[moverKey] = Math.max(0, state.clock[moverKey] - elapsed);
-    state.clock.activeColor = moverColor === 'w' ? 'b' : 'w';
-    state.clock.lastTickAt = Date.now();
-    clock = { ...state.clock };
-    console.log('[clock] after move:', state.clock);
-    if (state.clock[moverKey] <= 0) {
-      timedOut = moverColor;
+
+    if (state.moveCount === 1) {
+      state.clock.activeColor = chess.turn();
+      state.clock.lastTickAt = Date.now();
+      state.clock.running = true;
+    } else {
+      const moverKey = moverColor === 'w' ? 'white' : 'black';
+      const elapsed = (Date.now() - state.clock.lastTickAt) / 1000;
+      state.clock[moverKey] = Math.max(0, state.clock[moverKey] - elapsed);
+      state.clock.activeColor = chess.turn();
+      state.clock.lastTickAt = Date.now();
+      state.clock.running = true;
+      if (state.clock[moverKey] <= 0) {
+        timedOut = moverColor;
+      }
     }
+
+    clock = { ...state.clock };
+    console.log('[clock] after move:', {
+      movedColor: moverColor,
+      newActiveColor: state.clock.activeColor,
+      white: state.clock.white,
+      black: state.clock.black,
+    });
   }
 
   return {

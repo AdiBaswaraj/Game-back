@@ -120,6 +120,10 @@ function findRoomBySocketId(socketId) {
   return null;
 }
 
+function deleteRoom(code) {
+  return rooms.delete(code);
+}
+
 function cleanupExpiredRooms() {
   const now = Date.now();
   let removed = 0;
@@ -150,5 +154,6 @@ module.exports = {
   setGameState,
   toPublicRoom,
   findRoomBySocketId,
+  deleteRoom,
   startCleanup,
 };

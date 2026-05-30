@@ -164,11 +164,19 @@ app.get('/api/scores/leaderboard/:gameId', ah(async (req, res) => {
 app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
   console.log('[room/create] received request:', req.body);
 
+  const timeoutId = setTimeout(() => {
+    if (!res.headersSent) {
+      console.error('[room/create] timeout');
+      res.status(503).json({ error: 'Room creation timed out' });
+    }
+  }, 5000);
+
   try {
     console.log('[room/create] validating body...');
     const { gameId, username } = req.body || {};
     if (!gameId || !username) {
       console.log('[room/create] missing fields');
+      clearTimeout(timeoutId);
       return res.status(400).json({ error: 'gameId and username are required' });
     }
 
@@ -177,9 +185,11 @@ app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
     console.log('[room/create] room created:', room.code);
 
     console.log('[room/create] sending response...');
-    return res.json({ code: room.code, room: rooms.toPublicRoom(room) });
+    clearTimeout(timeoutId);
+    return res.status(201).json({ code: room.code, room: rooms.toPublicRoom(room) });
   } catch (err) {
     console.error('[room/create] error:', err);
+    clearTimeout(timeoutId);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -187,6 +197,11 @@ app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
 app.get('/api/rooms/:code', (req, res) => {
   const room = rooms.getRoom(req.params.code);
   if (!room) return res.status(404).json({ error: 'Room not found' });
+  if (room.status === 'finished') {
+    return res
+      .status(410)
+      .json({ error: 'Game already ended', code: 'ROOM_FINISHED' });
+  }
   res.json(rooms.toPublicRoom(room));
 });
 
@@ -459,11 +474,17 @@ const io = new Server(server, {
   },
 });
 
+const ROOM_DELETE_DELAY_MS = 30 * 1000;
+
 async function finishGame(roomCode, winnerId, loserId, options = {}) {
   const { winnerScore = 1, reason = null } = options;
   const room = rooms.getRoom(roomCode);
   if (!room) {
     console.log('[finishGame] room not found:', roomCode);
+    return;
+  }
+  if (room.status === 'finished') {
+    console.log('[finishGame] room already finished:', roomCode);
     return;
   }
 
@@ -474,6 +495,11 @@ async function finishGame(roomCode, winnerId, loserId, options = {}) {
   }
 
   rooms.updateStatus(roomCode, 'finished');
+
+  setTimeout(() => {
+    rooms.deleteRoom(roomCode);
+    console.log('[room] deleted finished room:', roomCode);
+  }, ROOM_DELETE_DELAY_MS);
 
   const completed_at = new Date().toISOString();
   try {
@@ -570,6 +596,10 @@ io.on('connection', (socket) => {
     const existing = rooms.getRoom(roomCode);
     if (!existing) {
       socket.emit('error', { message: 'Room not found' });
+      return;
+    }
+    if (existing.status === 'finished') {
+      socket.emit('error', { message: 'Game already ended' });
       return;
     }
     if (existing.players.length >= 2) {
@@ -702,6 +732,12 @@ io.on('connection', (socket) => {
     }
 
     console.log(`[chess_move] accepted room=${roomCode} after-fen=${result.fen}`);
+    console.log('[chess] move detail:', {
+      from: result.move.from,
+      to: result.move.to,
+      color: result.move.color,
+      captured: result.move.captured,
+    });
 
     io.to(roomCode).emit('move_accepted', {
       move: result.move,
@@ -771,8 +807,11 @@ io.on('connection', (socket) => {
       return;
     }
     const room = rooms.getRoom(roomCode);
-    if (!room) {
-      socket.emit('error', { message: 'Room not found' });
+    if (!room || room.status === 'finished') {
+      socket.emit('error', {
+        message: 'Game already ended',
+        code: 'ROOM_FINISHED',
+      });
       return;
     }
     const reattached = rooms.reattachPlayer(roomCode, username, socket.id);
