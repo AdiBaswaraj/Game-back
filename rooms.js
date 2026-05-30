@@ -105,6 +105,7 @@ function toPublicRoom(room) {
     createdAt: room.createdAt,
     players: room.players.map((p) => ({
       id: p.id,
+      userId: p.id,
       username: p.username,
       ready: p.ready,
     })),

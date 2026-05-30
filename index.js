@@ -619,7 +619,17 @@ io.on('connection', (socket) => {
     if (bothReady) {
       const startPayload = { roomCode, gameId: room.gameId };
       if (room.gameState?.clock) startPayload.clock = room.gameState.clock;
-      io.to(roomCode).emit('game_start', startPayload);
+      if (room.gameId === 'chess') {
+        const [pW, pB] = room.players;
+        if (pW?.socketId) {
+          io.to(pW.socketId).emit('game_start', { ...startPayload, myColor: 'w' });
+        }
+        if (pB?.socketId) {
+          io.to(pB.socketId).emit('game_start', { ...startPayload, myColor: 'b' });
+        }
+      } else {
+        io.to(roomCode).emit('game_start', startPayload);
+      }
     }
   });
 
@@ -846,17 +856,20 @@ io.on('connection', (socket) => {
     const clockPayload = room.gameState?.clock
       ? { clock: room.gameState.clock }
       : {};
+    const isChess = gameId === 'chess';
     io.to(p1.socketId).emit('queue_matched', {
       roomCode: room.code,
       gameId,
       opponentUsername: p2.username,
       ...clockPayload,
+      ...(isChess ? { myColor: 'w' } : {}),
     });
     io.to(p2.socketId).emit('queue_matched', {
       roomCode: room.code,
       gameId,
       opponentUsername: p1.username,
       ...clockPayload,
+      ...(isChess ? { myColor: 'b' } : {}),
     });
 
     io.to(room.code).emit('room_update', rooms.toPublicRoom(room));
