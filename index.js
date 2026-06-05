@@ -649,6 +649,7 @@ io.on('connection', (socket) => {
     if (bothReady) {
       const startPayload = { roomCode, gameId: room.gameId };
       if (room.gameState?.clock) startPayload.clock = room.gameState.clock;
+      if (room.gameState?.currentTurn) startPayload.currentTurn = room.gameState.currentTurn;
       if (room.gameId === 'chess') {
         const [pW, pB] = room.players;
         if (pW?.socketId) {
@@ -664,14 +665,27 @@ io.on('connection', (socket) => {
   });
 
   socket.on('roll_dice', (payload = {}) => {
-    const { roomCode, playerId } = payload;
+    const { roomCode } = payload;
+    const playerId = payload.playerId || payload.userId;
+    const room = rooms.getRoom(roomCode);
+
+    console.log('[s&l] roll_dice received:', {
+      roomCode,
+      playerId,
+      socketId: socket.id,
+      currentTurn: room?.gameState?.currentTurn,
+      players: room?.players?.map((p) => ({
+        id: p.id,
+        socketId: p.socketId,
+      })),
+    });
+
     if (!roomCode || !playerId) {
       socket.emit('error', {
         message: 'roomCode and playerId are required',
       });
       return;
     }
-    const room = rooms.getRoom(roomCode);
     if (!room) {
       socket.emit('error', { message: 'Room not found' });
       return;
@@ -689,10 +703,21 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const nextPlayer = room.players.find(
+      (p) => p.id === room.gameState.currentTurn
+    );
+    console.log('[s&l] after roll:', {
+      newPosition: result.newPosition,
+      nextTurn: room.gameState.currentTurn,
+      nextTurnUsername: nextPlayer?.username,
+    });
+
     io.to(roomCode).emit('dice_result', {
       roll: result.roll,
+      playerId,
       newPosition: result.newPosition,
       nextTurn: result.nextTurn,
+      currentTurn: room.gameState.currentTurn,
       winner: result.winner,
     });
   });
@@ -895,12 +920,16 @@ io.on('connection', (socket) => {
     const clockPayload = room.gameState?.clock
       ? { clock: room.gameState.clock }
       : {};
+    const turnPayload = room.gameState?.currentTurn
+      ? { currentTurn: room.gameState.currentTurn }
+      : {};
     const isChess = gameId === 'chess';
     io.to(p1.socketId).emit('queue_matched', {
       roomCode: room.code,
       gameId,
       opponentUsername: p2.username,
       ...clockPayload,
+      ...turnPayload,
       ...(isChess ? { myColor: 'w' } : {}),
     });
     io.to(p2.socketId).emit('queue_matched', {
@@ -908,6 +937,7 @@ io.on('connection', (socket) => {
       gameId,
       opponentUsername: p1.username,
       ...clockPayload,
+      ...turnPayload,
       ...(isChess ? { myColor: 'b' } : {}),
     });
 

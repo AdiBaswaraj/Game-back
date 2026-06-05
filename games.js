@@ -34,6 +34,7 @@ function initGameState(gameId, players) {
     return {
       positions: { [p1.id]: 1, [p2.id]: 1 },
       turn: p1.id,
+      currentTurn: p1.id,
       lastDice: null,
       rollHistory: [],
     };
@@ -101,6 +102,7 @@ function rollDice(state, playerIds, playerId, username) {
   const otherId = playerIds.find((id) => id !== playerId);
   const nextTurn = winner ? null : otherId;
   state.turn = nextTurn;
+  state.currentTurn = nextTurn;
   state.lastDice = { roll, by: playerId, newPosition, winner };
 
   state.rollHistory = state.rollHistory || [];
