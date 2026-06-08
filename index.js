@@ -20,12 +20,35 @@ const queues = require('./queues');
 
 const allowedOrigin = process.env.FRONTEND_URL;
 
+const STATIC_ORIGINS = [
+  'https://game-front-peach.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
+const VERCEL_PREVIEW_RE = /^https:\/\/game-front[a-z0-9-]*\.vercel\.app$/;
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (STATIC_ORIGINS.includes(origin)) return true;
+  if (VERCEL_PREVIEW_RE.test(origin)) return true;
+  return false;
+}
+
+const ERR = {
+  MISSING_TOKEN: { status: 401, code: 'MISSING_TOKEN', error: 'Missing Authorization Bearer token' },
+  SESSION_EXPIRED: { status: 401, code: 'SESSION_EXPIRED', error: 'Invalid or expired session' },
+  USERNAME_TAKEN: { status: 409, code: 'USERNAME_TAKEN', error: 'Username already taken' },
+  VALIDATION_FAILED: { status: 400, code: 'VALIDATION_FAILED', error: 'Missing or invalid fields' },
+  TIMEOUT: { status: 503, code: 'TIMEOUT', error: 'Request timed out' },
+  INTERNAL: { status: 500, code: 'INTERNAL', error: 'Internal server error' },
+};
+
+function sendErr(res, kind, extra = {}) {
+  return res.status(kind.status).json({ error: kind.error, code: kind.code, ...extra });
+}
+
 const corsOptions = {
-  origin: [
-    'https://game-front-peach.vercel.app',
-    'http://localhost:5173',
-    'http://localhost:3000',
-  ],
+  origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with'],
   credentials: true,
@@ -79,12 +102,58 @@ app.use((err, req, res, next) => {
 const ah = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next);
 
+async function requireAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+  if (!token) return sendErr(res, ERR.MISSING_TOKEN);
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data?.user) {
+      console.log('[auth] rejected:', error?.message);
+      return sendErr(res, ERR.SESSION_EXPIRED);
+    }
+    req.user = data.user;
+    return next();
+  } catch (e) {
+    console.error('[auth] verification threw:', e.message);
+    return sendErr(res, ERR.SESSION_EXPIRED, { detail: e.message });
+  }
+}
+
+async function ensureProfile(userId, requestedUsername) {
+  const { data: existing, error: lookupErr } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .eq('id', userId)
+    .maybeSingle();
+  if (lookupErr) return { error: { kind: 'INTERNAL', detail: lookupErr.message } };
+  if (existing) return { profile: existing };
+
+  if (!requestedUsername) {
+    return { error: { kind: 'VALIDATION_FAILED', detail: 'username required to create profile' } };
+  }
+  const { data: inserted, error: insertErr } = await supabase
+    .from('profiles')
+    .insert({ id: userId, username: requestedUsername })
+    .select('id, username, avatar_url')
+    .single();
+  if (insertErr) {
+    if (insertErr.code === '23505') {
+      return { error: { kind: 'USERNAME_TAKEN' } };
+    }
+    return { error: { kind: 'INTERNAL', detail: insertErr.message } };
+  }
+  console.log('[profile] lazily created for user:', userId, 'username:', requestedUsername);
+  return { profile: inserted };
+}
+
 const roomCreateLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
+  keyGenerator: (req) => req.user?.id || req.ip,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many requests, please slow down' },
+  message: { error: 'Too many requests, please slow down', code: 'RATE_LIMITED' },
 });
 
 const scoresLimiter = rateLimit({
@@ -104,7 +173,7 @@ app.get('/cors-test', (req, res) => {
   res.json({
     ok: true,
     origin,
-    corsAllowed: corsOptions.origin.includes(origin),
+    corsAllowed: isOriginAllowed(origin),
   });
 });
 
@@ -161,36 +230,46 @@ app.get('/api/scores/leaderboard/:gameId', ah(async (req, res) => {
   res.json(leaderboard);
 }));
 
-app.post('/api/rooms/create', roomCreateLimiter, (req, res) => {
-  console.log('[room/create] received request:', req.body);
+app.post('/api/rooms/create', requireAuth, roomCreateLimiter, async (req, res) => {
+  console.log('[room/create] received request:', req.body, 'user:', req.user?.id);
 
   const timeoutId = setTimeout(() => {
     if (!res.headersSent) {
       console.error('[room/create] timeout');
-      res.status(503).json({ error: 'Room creation timed out' });
+      sendErr(res, ERR.TIMEOUT);
     }
   }, 5000);
 
   try {
-    console.log('[room/create] validating body...');
     const { gameId, username } = req.body || {};
-    if (!gameId || !username) {
-      console.log('[room/create] missing fields');
+    if (!gameId) {
       clearTimeout(timeoutId);
-      return res.status(400).json({ error: 'gameId and username are required' });
+      return sendErr(res, ERR.VALIDATION_FAILED, { detail: 'gameId is required' });
     }
 
-    console.log('[room/create] creating room...');
-    const room = rooms.createRoom(gameId);
-    console.log('[room/create] room created:', room.code);
+    const result = await ensureProfile(req.user.id, username);
+    if (result.error) {
+      clearTimeout(timeoutId);
+      const kind = ERR[result.error.kind] || ERR.INTERNAL;
+      return sendErr(res, kind, result.error.detail ? { detail: result.error.detail } : {});
+    }
 
-    console.log('[room/create] sending response...');
+    const room = rooms.createRoom(gameId);
+    console.log(
+      '[room/create] room created:', room.code,
+      'for user:', req.user.id, '(', result.profile.username, ')'
+    );
+
     clearTimeout(timeoutId);
-    return res.status(201).json({ code: room.code, room: rooms.toPublicRoom(room) });
+    return res.status(201).json({
+      code: room.code,
+      room: rooms.toPublicRoom(room),
+      profile: result.profile,
+    });
   } catch (err) {
     console.error('[room/create] error:', err);
     clearTimeout(timeoutId);
-    return res.status(500).json({ error: err.message });
+    return sendErr(res, ERR.INTERNAL, { detail: err.message });
   }
 });
 
@@ -1022,6 +1101,7 @@ rooms.startCleanup();
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log('[cors] allowed origins:', corsOptions.origin);
+  console.log('[cors] static origins:', STATIC_ORIGINS);
+  console.log('[cors] preview pattern:', VERCEL_PREVIEW_RE.source);
   games.logBoardMap();
 });
